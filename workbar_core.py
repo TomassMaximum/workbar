@@ -17,12 +17,15 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, date
 from pathlib import Path
+from time import time as timestamp
+from urllib.parse import urlencode
 
 from workbar_visual import capsule_images
 
 HOME = Path(os.environ.get("WORKBAR_HOME", Path.home() / ".workbar"))
 STATE_PATH = HOME / "state.json"
 PLUGIN_NAME = "workbar"
+COMPLETION_DISPLAY_SECONDS = 300
 
 
 def today() -> str:
@@ -36,6 +39,9 @@ def empty_state() -> dict:
         "status": "",
         "progress": None,
         "updatedAt": None,
+        "dailyPrompt": "unasked",
+        "completedAt": None,
+        "hideAt": None,
     }
 
 
@@ -48,6 +54,9 @@ def validate_state(raw: object) -> dict:
         raise StateError("state must be a JSON object")
     state = empty_state()
     state.update({k: v for k, v in raw.items() if k in state})
+    # Preserve already aligned plans when upgrading from the original schema.
+    if "dailyPrompt" not in raw and state["tasks"]:
+        state["dailyPrompt"] = "confirmed"
     try:
         if not isinstance(state["date"], str):
             raise ValueError
@@ -73,6 +82,12 @@ def validate_state(raw: object) -> dict:
         raise StateError("progress must be null or a finite number between 0 and 1")
     if state["updatedAt"] is not None and not isinstance(state["updatedAt"], str):
         raise StateError("updatedAt must be a string or null")
+    if state["dailyPrompt"] not in ("unasked", "awaiting", "confirmed", "skipped"):
+        raise StateError("invalid dailyPrompt state")
+    for key in ("completedAt", "hideAt"):
+        value = state[key]
+        if value is not None and (type(value) not in (int, float) or not 0 <= value <= 1e12 or not math.isfinite(value)):
+            raise StateError(f"{key} must be null or a nonnegative timestamp")
     return state
 
 
@@ -91,11 +106,9 @@ def load_state(strict: bool = False) -> dict:
         # never replace a corrupt file with this empty display state.
         return {**empty_state(), "status": "状态文件异常", "error": str(error)}
     if state["date"] != today():
-        # A new day: keep the plan structure but reset completion.
-        state["date"] = today()
-        state["tasks"] = [dict(t, done=False) for t in state["tasks"]]
-        state["status"] = ""
-        state["progress"] = None
+        # Daily plans belong only to their date; yesterday is never assumed to
+        # be today's task source. The first real user turn aligns a fresh plan.
+        return empty_state()
     return state
 
 
@@ -128,11 +141,39 @@ def state_lock():
 
 
 def update_state(mutate: Callable[[dict], None]) -> dict:
+    newly_complete = False
     with state_lock():
         state = load_state(strict=True)
         mutate(state)
+        state["progress"] = None
+        tasks = state["tasks"]
+        if tasks and all(task["done"] for task in tasks):
+            if state["completedAt"] is None:
+                state["completedAt"] = timestamp()
+                state["hideAt"] = state["completedAt"] + COMPLETION_DISPLAY_SECONDS
+                newly_complete = True
+        else:
+            state["completedAt"] = state["hideAt"] = None
         save_state(state)
+    if newly_complete:
+        notify_completion()
     return state
+
+
+def notify_completion() -> None:
+    """SwiftBar owns notification permission; no AppleScript or shell text."""
+    query = urlencode({"plugin": PLUGIN_NAME, "title": "今日任务全部完成",
+                       "body": "今天的任务全部完成了！workbar 将在五分钟后自动隐藏。"})
+    _open_swiftbar(f"swiftbar://notify?{query}")
+
+
+def is_visible(state: dict, now: float | None = None) -> bool:
+    if state.get("error"):
+        return True
+    if not state.get("tasks"):
+        return False
+    hide_at = state.get("hideAt")
+    return hide_at is None or (timestamp() if now is None else now) < hide_at
 
 
 def menu_text(text: str) -> str:
@@ -145,8 +186,6 @@ def menu_text(text: str) -> str:
 
 
 def compute_progress(state: dict) -> float | None:
-    if isinstance(state.get("progress"), (int, float)):
-        return max(0.0, min(1.0, float(state["progress"])))
     tasks = state.get("tasks") or []
     if not tasks:
         return None
@@ -161,7 +200,7 @@ def header_text(state: dict) -> str:
         parts.append("待开始")
     else:
         parts.append(f"{int(round(ratio * 100))}%")
-    status = menu_text(state.get("status") or "").strip()
+    status = "今日全部完成" if ratio == 1 else menu_text(state.get("status") or "").strip()
     if status:
         parts.append(status if len(status) <= 14 else status[:13] + "…")
     return "  ".join(parts)
@@ -169,6 +208,8 @@ def header_text(state: dict) -> str:
 
 def render_swiftbar(state: dict) -> str:
     """Full SwiftBar plugin output (header + dropdown menu)."""
+    if not is_visible(state):
+        return ""
     ratio = compute_progress(state)
     tasks = state.get("tasks") or []
     done = sum(1 for t in tasks if t.get("done"))
@@ -201,9 +242,13 @@ def render_swiftbar(state: dict) -> str:
 
 def refresh_menubar() -> None:
     """Ask SwiftBar to re-read the plugin immediately."""
+    _open_swiftbar(f"swiftbar://refreshplugin?name={PLUGIN_NAME}")
+
+
+def _open_swiftbar(url: str) -> None:
     try:
         subprocess.run(
-            ["open", "-g", f"swiftbar://refreshplugin?name={PLUGIN_NAME}"],
+            ["open", "-g", url],
             check=False,
             timeout=5,
             stdout=subprocess.DEVNULL,

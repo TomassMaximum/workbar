@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise all eight workbar tools over stdio using temporary state.
+"""Exercise workbar tools over stdio using temporary state.
 
   .venv/bin/python test_mcp.py
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -38,7 +39,7 @@ async def exercise(home: Path) -> None:
             names = {tool.name for tool in (await session.list_tools()).tools}
             assert names == {"workbar_set_plan", "workbar_add_task", "workbar_complete",
                              "workbar_undo", "workbar_set_status", "workbar_set_progress",
-                             "workbar_state", "workbar_clear"}, names
+                             "workbar_state", "workbar_clear", "workbar_begin_turn"}, names
             print("tools:", ", ".join(sorted(names)))
 
             async def call(name, args=None, error=False):
@@ -50,11 +51,16 @@ async def exercise(home: Path) -> None:
                 result = await call("workbar_state")
                 return json.loads(result.content[0].text)
 
+            first = await call("workbar_begin_turn")
+            assert json.loads(first.content[0].text)["should_ask"] is True
+            second = await call("workbar_begin_turn")
+            assert json.loads(second.content[0].text)["should_ask"] is False
             await call("workbar_set_plan", {"tasks": ["修 A 模块 bug", "写 B 接口", "补测试"]})
             await call("workbar_complete", {"task": "2"})
             assert (await state())["tasks"][1]["done"] is True
-            await call("workbar_set_progress", {"percent": 62})
-            assert (await state())["progress"] == 0.62
+            await call("workbar_set_progress", {"percent": 62}, error=True)
+            await call("workbar_set_progress")
+            assert (await state())["progress"] is None
             await call("workbar_undo", {"task": "2"})
             current = await state()
             assert current["tasks"][1]["done"] is False and current["progress"] is None
@@ -71,6 +77,22 @@ async def exercise(home: Path) -> None:
             await call("workbar_set_plan", {"tasks": ["修复登录接口", "修复登录"]})
             await call("workbar_complete", {"task": "修复登录"})
             assert [t["done"] for t in (await state())["tasks"]] == [False, True]
+            await call("workbar_complete", {"task": "1"})
+            complete = await state()
+            assert complete["hideAt"] - complete["completedAt"] == 300
+            rendered = subprocess.run([sys.executable, str(HERE / "cli.py"), "render"],
+                                      env=params.env, capture_output=True, text=True, check=True)
+            assert rendered.stdout.startswith("100%")
+            complete["hideAt"] = 0  # Simulate the persisted deadline passing.
+            (home / "state.json").write_text(json.dumps(complete))
+            hidden = subprocess.run([sys.executable, str(HERE / "cli.py"), "render"],
+                                    env=params.env, capture_output=True, text=True, check=True)
+            assert not hidden.stdout.strip()
+            await call("workbar_add_task", {"title": "完成后的新任务"})
+            assert (await state())["hideAt"] is None
+            reopened = subprocess.run([sys.executable, str(HERE / "cli.py"), "render"],
+                                      env=params.env, capture_output=True, text=True, check=True)
+            assert reopened.stdout.startswith("67%")
             await call("workbar_clear")
             assert (await state())["tasks"] == []
             print("plan / add / complete / undo / status / progress / state / clear: OK")
@@ -80,6 +102,7 @@ async def exercise(home: Path) -> None:
             await call("workbar_set_status", {"text": "不得覆盖"}, error=True)
             assert (home / "state.json").read_text() == "[]"
             print("ambiguous task and corrupt-state protection: OK")
+            print("completion deadline / hidden renderer / new-task reopening: OK")
 
 
 async def main() -> int:

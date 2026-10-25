@@ -7,6 +7,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_HOME="${WORKBAR_HOME:-$HOME/.workbar}"
 SKILLS_DIR="${WORKBAR_SKILLS_DIR:-$HOME/.openclaw/workspace/skills}"
 PLUGIN_DIR="${WORKBAR_PLUGIN_DIR:-$HOME/Library/Application Support/SwiftBar}"
+AGENTS_FILE="${WORKBAR_AGENTS_FILE:-$(dirname "$SKILLS_DIR")/AGENTS.md}"
+CODEX_DIR="${WORKBAR_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
@@ -37,17 +39,23 @@ if [ -d "/Applications/SwiftBar.app" ]; then
   trap - EXIT
   defaults write com.ameba.SwiftBar PluginDirectory -string "$PLUGIN_DIR"
   say "SwiftBar launcher installed -> $PLUGIN_DIR/workbar.5s.py"
-  open -a SwiftBar || true
+  if ! pgrep -x SwiftBar >/dev/null; then
+    open -a SwiftBar || true
+  fi
   open -g "swiftbar://refreshplugin?name=workbar" || true
 else
   say "SwiftBar not installed — \`brew install --cask swiftbar\`, then re-run"
 fi
 
 # 4. Skill --------------------------------------------------------------------
-# Copy, not symlink: the skill loader ignores symlinked skill directories.
-mkdir -p "$SKILLS_DIR/workbar"
-cp "$DIR/skills/workbar/SKILL.md" "$SKILLS_DIR/workbar/SKILL.md"
-say "skill installed -> $SKILLS_DIR/workbar (copy; re-run after editing the skill)"
+# Install actual files plus a routing instruction, so unrelated first messages
+# also run the daily check. Business rules stay inside the skill.
+AGENT_ARGS=(--state-home "$STATE_HOME" --skills-dir "$SKILLS_DIR" --agents-file "$AGENTS_FILE")
+if command -v codex >/dev/null 2>&1 || [ -d "$CODEX_DIR" ] || [ -n "${WORKBAR_CODEX_HOME:-}" ]; then
+  AGENT_ARGS+=(--codex-home "$CODEX_DIR")
+fi
+"$DIR/.venv/bin/python" "$DIR/install_agent.py" "${AGENT_ARGS[@]}"
+say "daily-turn skill installed -> $SKILLS_DIR/workbar; routing -> $AGENTS_FILE"
 
 # 5. MCP registration (optional, only if openclaw exists) ---------------------
 if command -v openclaw >/dev/null 2>&1; then

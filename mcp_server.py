@@ -5,7 +5,7 @@ Run:  .venv/bin/python mcp_server.py
 
 Exposes the desk progress bar to an agent:
   workbar_set_plan / workbar_add_task / workbar_complete / workbar_undo
-  workbar_set_status / workbar_set_progress / workbar_state / workbar_clear
+  workbar_set_status / workbar_set_progress / workbar_state / workbar_clear / workbar_begin_turn
 """
 
 from __future__ import annotations
@@ -22,11 +22,14 @@ from mcp.server.mcpserver.exceptions import ToolError  # noqa: E402
 
 server = MCPServer(
     "workbar",
-    version="0.1.0",
+    version="0.2.0",
     instructions=(
-        "Updates the macOS menu-bar work progress bar. Call workbar_set_plan at the "
-        "start of a work session, workbar_complete as tasks finish, and "
-        "workbar_set_status whenever what you are doing right now changes."
+        "Before each real user turn, call workbar_begin_turn. If should_ask is true, "
+        "ask for today's tasks once while answering the user's request. If ignored, "
+        "leave the plan empty. Record only user-aligned tasks with workbar_set_plan "
+        "or workbar_add_task, and mark explicit completions with workbar_complete. "
+        "Progress comes only from tasks. Visibility, completion notification and "
+        "the five-minute completion display are automatic."
     ),
 )
 
@@ -37,6 +40,12 @@ def _call(operation, *args, **kwargs):
         return operation(*args, **kwargs)
     except (ValueError, OSError) as error:
         raise ToolError(str(error)) from error
+
+
+@server.tool()
+def workbar_begin_turn() -> dict:
+    """Call once per real user message; should_ask reserves today's only task question across chats."""
+    return _call(api.begin_turn)
 
 
 @server.tool()
@@ -73,7 +82,7 @@ def workbar_set_status(text: str) -> str:
 def workbar_set_progress(
     percent: float | None = None, done: int | None = None, total: int | None = None
 ) -> str:
-    """Override progress when the plan is not a clean task count: percent 0-100, or done/total."""
+    """Deprecated. Only empty arguments may clear legacy overrides; progress now comes only from tasks."""
     return _call(api.set_progress, percent=percent, done=done, total=total)
 
 

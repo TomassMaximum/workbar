@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from uuid import uuid4
 
 from workbar_core import load_state, update_state, compute_progress, refresh_menubar, today
@@ -72,6 +71,7 @@ def set_plan(tasks: list[str], keep_done: bool = False) -> str:
             for title in tasks if title.strip()
         ]
         state["progress"] = None
+        state["dailyPrompt"] = "confirmed" if state["tasks"] else "skipped"
     return _update(mutate)
 
 
@@ -89,6 +89,7 @@ def add_task(title: str) -> str:
     def mutate(state):
         state["tasks"].append(_new_task(title))
         state["progress"] = None
+        state["dailyPrompt"] = "confirmed"
     return _update(mutate)
 
 
@@ -97,21 +98,38 @@ def set_status(text: str) -> str:
 
 
 def set_progress(percent: float | None = None, done: int | None = None, total: int | None = None) -> str:
-    if percent is not None:
-        if not math.isfinite(percent):
-            raise ValueError("percent must be finite")
-        progress = max(0.0, min(1.0, float(percent) / 100.0))
-    elif total is not None:
-        if total <= 0 or (done or 0) < 0:
-            raise ValueError("total must be positive and done must be nonnegative")
-        progress = max(0.0, min(1.0, (done or 0) / total))
-    else:
-        progress = None
-    return _update(lambda state: state.update(progress=progress))
+    # Keep the old endpoint as a migration aid, but tasks are now the sole source.
+    def mutate(state):
+        if any(value is not None for value in (percent, done, total)):
+            raise ValueError("progress is calculated from today's tasks; update task completion instead")
+        state["progress"] = None
+    return _update(mutate)
 
 
 def clear() -> str:
-    return _update(lambda state: state.update(tasks=[], status="", progress=None))
+    return _update(lambda state: state.update(tasks=[], status="", progress=None, dailyPrompt="skipped"))
+
+
+def begin_turn() -> dict:
+    """One daily prompt across chats. Call once before each real user message."""
+    should_ask = False
+
+    def mutate(state):
+        nonlocal should_ask
+        if state["tasks"]:
+            state["dailyPrompt"] = "confirmed"
+        elif state["dailyPrompt"] == "unasked":
+            state["dailyPrompt"] = "awaiting"
+            should_ask = True
+        elif state["dailyPrompt"] == "awaiting":
+            # The agent can still record tasks supplied in this same message.
+            # With no answer, no plan is assumed and no second question is sent.
+            state["dailyPrompt"] = "skipped"
+
+    state = update_state(mutate)
+    refresh_menubar()
+    return {"should_ask": should_ask, "question": "今天有哪些任务要记进进度条？" if should_ask else None,
+            "dailyPrompt": state["dailyPrompt"], "tasks": state["tasks"], "date": state["date"]}
 
 
 def show() -> str:

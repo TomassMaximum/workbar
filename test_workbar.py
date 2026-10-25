@@ -24,6 +24,7 @@ def complete_in_process(home, index, start):
     core.HOME = Path(home)
     core.STATE_PATH = core.HOME / "state.json"
     api.refresh_menubar = lambda: None
+    core.notify_completion = lambda: None
     original_load = core.load_state
 
     def slow_load(*args, **kwargs):
@@ -48,6 +49,10 @@ class WorkbarTests(unittest.TestCase):
         refresh_patch = patch.object(api, "refresh_menubar")
         refresh_patch.start()
         self.addCleanup(refresh_patch.stop)
+        self.real_notify = core.notify_completion
+        notification_patch = patch.object(core, "notify_completion")
+        self.notification = notification_patch.start()
+        self.addCleanup(notification_patch.stop)
 
     def test_concurrent_completions_are_all_retained(self):
         api.set_plan([f"任务{i}" for i in range(4)])
@@ -127,6 +132,7 @@ class WorkbarTests(unittest.TestCase):
                           b'{"tasks": [null]}', b'{"tasks": [{"id": "x", "title": "x", "done": "false"}]}',
                           b'{"status": 1}', b'{"progress": NaN}', b'{"progress": true}',
                           b'{"progress": 1e999}', b'{"date": null}', b'{"updatedAt": []}',
+                          b'{"dailyPrompt": []}', b'{"hideAt": "soon"}', b'{"completedAt": NaN}',
                           b'[' * 1100 + b'0' + b']' * 1100,
                           b'{"progress": ' + b'9' * 5000 + b'}']
         for raw in invalid_states:
@@ -157,27 +163,119 @@ class WorkbarTests(unittest.TestCase):
         self.assertNotIn(" | bash=", output)
 
     def test_state_link_encodes_paths_with_spaces_and_menu_characters(self):
+        state = core.empty_state()
+        state["tasks"] = [{"id": "one", "title": "one", "done": False}]
         with patch.object(core, "STATE_PATH", self.root / "with spaces | quotes'\nstate.json"):
-            output = core.render_swiftbar(core.empty_state())
+            output = core.render_swiftbar(state)
         link = next(line for line in output.splitlines() if line.startswith("打开状态文件"))
         self.assertIn(" | href=file:///", link)
         self.assertIn("%20", link)
         self.assertIn("%7C", link)
         self.assertIn("%0A", link)
 
-    def test_day_rollover_and_progress_override(self):
+    def test_day_rollover_and_task_based_progress(self):
         api.set_plan(["甲", "乙"])
         api.complete("1")
-        api.set_progress(80)
-        self.assertEqual(core.compute_progress(core.load_state()), 0.8)
+        with self.assertRaisesRegex(ValueError, "today's tasks"):
+            api.set_progress(80)
+        state = core.load_state()
+        state["progress"] = 0.8  # An old override cannot replace task progress.
+        self.assertEqual(core.compute_progress(state), 0.5)
         api.complete("2")
         self.assertIsNone(core.load_state()["progress"])
         with patch.object(core, "today", return_value="2099-01-01"):
             api.set_status("新的一天")
             state = core.load_state()
         self.assertEqual(state["date"], "2099-01-01")
-        self.assertFalse(any(t["done"] for t in state["tasks"]))
+        self.assertEqual(state["tasks"], [])
+        self.assertEqual(state["dailyPrompt"], "unasked")
         self.assertEqual(state["status"], "新的一天")
+
+    def test_daily_question_once_then_ignored_until_tasks_are_supplied(self):
+        self.assertEqual(core.render_swiftbar(core.load_state()), "")
+        first = api.begin_turn()
+        self.assertTrue(first["should_ask"])
+        self.assertEqual(first["dailyPrompt"], "awaiting")
+        self.assertEqual(core.render_swiftbar(core.load_state()), "")
+        self.assertFalse(api.begin_turn()["should_ask"])
+        self.assertEqual(core.load_state()["dailyPrompt"], "skipped")
+        self.assertFalse(api.begin_turn()["should_ask"])
+        api.add_task("下午补上的任务")
+        self.assertTrue(core.is_visible(core.load_state()))
+        self.assertEqual(core.compute_progress(core.load_state()), 0)
+        self.assertEqual(core.load_state()["dailyPrompt"], "confirmed")
+        self.assertFalse(api.begin_turn()["should_ask"])
+
+    def test_parallel_chats_reserve_only_one_daily_question(self):
+        start = Barrier(4)
+        def begin(_):
+            start.wait(timeout=5)
+            return api.begin_turn()["should_ask"]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            replies = list(pool.map(begin, range(4)))
+        self.assertEqual(sum(replies), 1)
+
+    def test_completion_notifies_once_and_hides_at_persisted_deadline(self):
+        with patch.object(core, "timestamp", return_value=1000):
+            api.set_plan(["甲", "乙"])
+            api.complete("1")
+            self.notification.assert_not_called()
+            api.complete("2")
+        self.notification.assert_called_once()
+        state = core.load_state()
+        self.assertEqual(state["completedAt"], 1000)
+        self.assertEqual(state["hideAt"], 1300)
+        with patch.object(core, "timestamp", return_value=1299):
+            self.assertIn("100%", core.render_swiftbar(core.load_state()))
+            api.complete("2")
+            api.set_status("没有重设计时")
+        self.notification.assert_called_once()
+        self.assertEqual(core.load_state()["hideAt"], 1300)
+        with patch.object(core, "timestamp", return_value=1300):
+            self.assertEqual(core.render_swiftbar(core.load_state()), "")
+        self.assertTrue(all(task["done"] for task in core.load_state()["tasks"]))
+
+    def test_new_task_or_undo_reopens_and_cancels_completion_timer(self):
+        with patch.object(core, "timestamp", return_value=1000):
+            api.set_plan(["甲"])
+            api.complete("1")
+        with patch.object(core, "timestamp", return_value=1400):
+            api.add_task("乙")
+            state = core.load_state()
+            self.assertTrue(core.is_visible(state))
+            self.assertIsNone(state["hideAt"])
+            self.assertEqual(core.compute_progress(state), 0.5)
+            api.complete("2")
+        self.assertEqual(self.notification.call_count, 2)
+        self.assertEqual(core.load_state()["hideAt"], 1700)
+        api.complete("1", False)
+        self.assertIsNone(core.load_state()["hideAt"])
+        self.assertTrue(core.is_visible(core.load_state()))
+
+    def test_next_day_resets_prompt_tasks_and_completion_deadline(self):
+        api.set_plan(["昨天的任务"])
+        api.complete("1")
+        with patch.object(core, "today", return_value="2099-01-01"):
+            first = api.begin_turn()
+            self.assertTrue(first["should_ask"])
+            state = core.load_state()
+            self.assertEqual(state["tasks"], [])
+            self.assertIsNone(state["hideAt"])
+            self.assertEqual(core.render_swiftbar(state), "")
+
+    def test_existing_today_plan_survives_upgrade_without_a_question(self):
+        raw = {"date": core.today(), "tasks": [{"id": "legacy", "title": "旧计划", "done": False}]}
+        core.STATE_PATH.write_text(json.dumps(raw))
+        self.assertFalse(api.begin_turn()["should_ask"])
+        self.assertEqual(core.load_state()["tasks"], raw["tasks"])
+
+    def test_notification_url_uses_swiftbar_and_encodes_chinese(self):
+        from urllib.parse import parse_qs, urlparse
+        with patch.object(core, "_open_swiftbar") as launch:
+            self.real_notify()
+        url = urlparse(launch.call_args.args[0])
+        self.assertEqual((url.scheme, url.netloc), ("swiftbar", "notify"))
+        self.assertEqual(parse_qs(url.query)["title"], ["今日任务全部完成"])
 
     def test_empty_title_and_nonfinite_progress_leave_state_intact(self):
         api.set_plan(["任务"])
@@ -208,9 +306,14 @@ class WorkbarTests(unittest.TestCase):
                                            if command == "openclaw" else 'exit 0\n'))
             stub.chmod(0o700)
         registration = self.root / "registration.json"
+        (self.root / "agent-rules.md").write_text("原有 OpenClaw 规则\n")
+        (self.root / "codex").mkdir()
+        (self.root / "codex/AGENTS.md").write_text("原有 Codex 规则\n")
         env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
                    WORKBAR_HOME=str(state_home), WORKBAR_PLUGIN_DIR=str(plugin_dir),
                    WORKBAR_SKILLS_DIR=str(self.root / "skills"),
+                   WORKBAR_AGENTS_FILE=str(self.root / "agent-rules.md"),
+                   WORKBAR_CODEX_HOME=str(self.root / "codex"),
                    WORKBAR_TEST_REGISTRATION=str(registration))
         for _ in range(2):
             subprocess.run(["bash", "install.sh"], cwd=HERE, env=env, check=True,
@@ -218,6 +321,14 @@ class WorkbarTests(unittest.TestCase):
             self.assertFalse(plugin.is_symlink())
             self.assertEqual(source.read_bytes(), source_before)
             self.assertEqual(json.loads(registration.read_text())["env"]["WORKBAR_HOME"], str(state_home.resolve()))
+        for rules in (self.root / "agent-rules.md", self.root / "codex/AGENTS.md"):
+            text = rules.read_text()
+            self.assertTrue(text.startswith("原有"))
+            self.assertEqual(text.count("<!-- workbar:begin -->"), 1)
+            self.assertIn("每条真人用户消息", text)
+        installed_skill = (self.root / "skills/workbar/SKILL.md").read_text()
+        self.assertIn("本机安装命令", installed_skill)
+        self.assertIn("begin-turn", installed_skill)
         state = core.empty_state()
         state["tasks"] = [{"id": "t1", "title": "custom-home-marker", "done": False}]
         (state_home / "state.json").write_text(json.dumps(state))
@@ -226,6 +337,15 @@ class WorkbarTests(unittest.TestCase):
         result = subprocess.run([str(plugin)], env=renderer_env, check=True,
                                 capture_output=True, text=True, timeout=5)
         self.assertIn("custom-home-marker", result.stdout)
+
+    def test_agent_install_refuses_a_broken_managed_block(self):
+        from install_agent import install
+        rules = self.root / "AGENTS.md"
+        original = "保留原文\n<!-- workbar:begin -->\n未闭合的管理块\n"
+        rules.write_text(original)
+        with self.assertRaisesRegex(ValueError, "malformed workbar block"):
+            install(HERE, self.root, self.root / "skills", rules)
+        self.assertEqual(rules.read_text(), original)
 
 
 if __name__ == "__main__":
