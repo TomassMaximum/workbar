@@ -3,7 +3,7 @@ name: workbar
 description: 更新 macOS 状态栏工作进度条。触发：开工定今日任务清单、说“X 做完了”、临时插任务、问“还剩多少”、说“收工”。调用 workbar_* MCP 工具（或项目内 cli.py 兜底），按今日任务清单和完成状态刷新桌面进度条。
 metadata:
   author: Wei + Claw
-  version: "1.0.0"
+  version: "1.0.1"
   homepage: ~/agent/workbar
 ---
 
@@ -32,7 +32,8 @@ macOS 状态栏工作进度条。显示端是 SwiftBar 插件，写入端是 MCP
 - **进度默认按任务完成比例算**，不要手填。只有任务粒度太粗（一件事要干半天）才用 `workbar_set_progress(percent=...)` 覆盖；之后任何 `workbar_complete` 都会自动清掉覆盖值。
 - `status` 只写"此刻在干什么"，≤14 字。不写情绪，不写计划。
 - **不要猜完成状态。** 用户没明说完成的任务不标记 done，哪怕自己觉得干完了。宁可多问一句。
-- `workbar_complete(task=...)` 接受序号（`"2"`）、任务 id 或标题片段；优先用序号或标题片段。
+- `workbar_complete(task=...)` 接受序号（`"2"`）、任务 id、完整标题或唯一标题片段。完整标题优先；若报匹配歧义，先读清单再用序号或唯一 id，不猜选哪一条。
+- 若报状态文件损坏或字段非法，保留原文件并说明原因，修复后再更新；不要用空计划或 clear 试图覆盖恢复。
 - 计划变更用 `workbar_set_plan` 整体替换，不要逐条 undo 再 add。
 - 跨天第一次读写会自动把任务重置为未完成、清空 status。
 
@@ -83,13 +84,14 @@ cd ~/agent/workbar
 ./install.sh
 ```
 
-`install.sh` 会做三件事：建 `.venv` 装 MCP SDK、把 SwiftBar 插件软链到插件目录、把本 skill 软链到 agent 的 skills 目录。详见项目 README。
+`install.sh` 会建 `.venv` 装 MCP SDK、写入持久化 `WORKBAR_HOME` 的 SwiftBar 启动器、拷贝本 skill、注册 OpenClaw MCP。详见项目 README。Codex 可单独把本目录拷贝到 `~/.codex/skills/workbar`。
 
 ## 自检
 
 ```bash
 cd ~/agent/workbar
-.venv/bin/python test_mcp.py      # 隔离的 .test-home，不动真实状态
+python3 -m unittest -v test_workbar.py
+.venv/bin/python test_mcp.py      # 临时目录，不动真实状态
 python3 cli.py render             # 看 SwiftBar 原始输出
 openclaw mcp probe workbar        # 应显示 8 tools
 ```

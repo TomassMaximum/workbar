@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import re
+import math
+from uuid import uuid4
 
-from workbar_core import load_state, save_state, compute_progress, refresh_menubar, today
+from workbar_core import load_state, update_state, compute_progress, refresh_menubar, today
 
 
-def _slug(text: str, n: int) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:24]
-    # Mostly-CJK titles collapse to nothing usable; fall back to a positional id.
-    return base if len(base) >= 3 else f"t{n}"
+def _new_task(title: str, done: bool = False) -> dict:
+    title = title.strip()
+    if not title:
+        raise ValueError("task title must not be empty")
+    return {"id": f"t-{uuid4().hex}", "title": title, "done": done}
 
 
 def _find(state: dict, ref: str) -> dict | None:
@@ -20,17 +22,27 @@ def _find(state: dict, ref: str) -> dict | None:
         idx = int(ref) - 1
         if 0 <= idx < len(tasks):
             return tasks[idx]
-    for t in tasks:
-        if t.get("id") == ref:
-            return t
-    lowered = ref.lower()
-    for t in tasks:
-        if lowered and lowered in t.get("title", "").lower():
-            return t
+        return None
+    if not ref:
+        return None
+    lowered = ref.casefold()
+    # Exact titles take precedence over substring matches. Any ambiguous tier
+    # must be resolved by the caller with an index or a unique id.
+    for matches in (
+        [t for t in tasks if t["id"] == ref],
+        [t for t in tasks if t["title"].casefold() == lowered],
+        [t for t in tasks if lowered in t["title"].casefold()],
+    ):
+        if len(matches) > 1:
+            raise ValueError(f"ambiguous task reference: {ref!r}; use a task index or unique id")
+        if matches:
+            return matches[0]
     return None
 
 
 def _summary(state: dict) -> str:
+    if state.get("error"):
+        return f"state error: {state['error']}; repair the state file before updating"
     tasks = state.get("tasks") or []
     done = sum(1 for t in tasks if t.get("done"))
     ratio = compute_progress(state)
@@ -45,77 +57,61 @@ def _summary(state: dict) -> str:
     return head + ("\n" + "\n".join(rows) if rows else "")
 
 
-def set_plan(tasks: list[str], keep_done: bool = False) -> str:
-    state = load_state()
-    old = {t.get("title"): bool(t.get("done")) for t in state.get("tasks") or []}
-    state["date"] = today()
-    state["tasks"] = [
-        {
-            "id": _slug(title, i),
-            "title": title.strip(),
-            "done": old.get(title.strip(), False) if keep_done else False,
-        }
-        for i, title in enumerate(tasks, 1)
-        if title.strip()
-    ]
-    state["progress"] = None
-    save_state(state)
+def _update(mutate) -> str:
+    state = update_state(mutate)
     refresh_menubar()
     return _summary(state)
+
+
+def set_plan(tasks: list[str], keep_done: bool = False) -> str:
+    def mutate(state):
+        old = {t["title"]: t["done"] for t in state["tasks"]}
+        state["date"] = today()
+        state["tasks"] = [
+            _new_task(title, old.get(title.strip(), False) if keep_done else False)
+            for title in tasks if title.strip()
+        ]
+        state["progress"] = None
+    return _update(mutate)
 
 
 def complete(ref: str, done: bool = True) -> str:
-    state = load_state()
-    task = _find(state, ref)
-    if task is None:
-        return f"task not found: {ref}\n" + _summary(state)
-    task["done"] = done
-    state["progress"] = None
-    save_state(state)
-    refresh_menubar()
-    return _summary(state)
+    def mutate(state):
+        task = _find(state, ref)
+        if task is None:
+            raise ValueError(f"task not found: {ref}")
+        task["done"] = done
+        state["progress"] = None
+    return _update(mutate)
 
 
 def add_task(title: str) -> str:
-    state = load_state()
-    tasks = state.get("tasks") or []
-    tasks.append({"id": _slug(title, len(tasks) + 1), "title": title.strip(), "done": False})
-    state["tasks"] = tasks
-    state["progress"] = None
-    save_state(state)
-    refresh_menubar()
-    return _summary(state)
+    def mutate(state):
+        state["tasks"].append(_new_task(title))
+        state["progress"] = None
+    return _update(mutate)
 
 
 def set_status(text: str) -> str:
-    state = load_state()
-    state["status"] = text.strip()
-    save_state(state)
-    refresh_menubar()
-    return _summary(state)
+    return _update(lambda state: state.update(status=text.strip()))
 
 
 def set_progress(percent: float | None = None, done: int | None = None, total: int | None = None) -> str:
-    state = load_state()
     if percent is not None:
-        state["progress"] = max(0.0, min(1.0, float(percent) / 100.0))
-    elif total:
-        state["progress"] = max(0.0, min(1.0, (done or 0) / total))
+        if not math.isfinite(percent):
+            raise ValueError("percent must be finite")
+        progress = max(0.0, min(1.0, float(percent) / 100.0))
+    elif total is not None:
+        if total <= 0 or (done or 0) < 0:
+            raise ValueError("total must be positive and done must be nonnegative")
+        progress = max(0.0, min(1.0, (done or 0) / total))
     else:
-        state["progress"] = None
-    save_state(state)
-    refresh_menubar()
-    return _summary(state)
+        progress = None
+    return _update(lambda state: state.update(progress=progress))
 
 
 def clear() -> str:
-    state = load_state()
-    state["tasks"] = []
-    state["status"] = ""
-    state["progress"] = None
-    save_state(state)
-    refresh_menubar()
-    return _summary(state)
+    return _update(lambda state: state.update(tasks=[], status="", progress=None))
 
 
 def show() -> str:

@@ -56,4 +56,8 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except (ValueError, OSError, IndexError) as error:
+        print(f"workbar: {error}", file=sys.stderr)
+        raise SystemExit(2)

@@ -24,7 +24,7 @@ agent ──MCP──> workbar MCP server ──> ~/.workbar/state.json ──> 
 | `cli.py` | 同一套操作的手动入口 |
 | `swiftbar/workbar.5s.py` | SwiftBar 插件（`5s` = 5 秒轮询；写入时会主动触发刷新） |
 | `skills/workbar/SKILL.md` | 可安装的 agent skill，描述何时调用哪些工具 |
-| `install.sh` | 新设备一键安装（venv + 插件软链 + skill 软链 + MCP 注册） |
+| `install.sh` | 新设备一键安装（venv + 插件启动器 + skill 拷贝 + MCP 注册） |
 | `test_mcp.py` | MCP 端到端冒烟测试（用隔离的 `WORKBAR_HOME`） |
 
 ## state.json
@@ -41,6 +41,9 @@ agent ──MCP──> workbar MCP server ──> ~/.workbar/state.json ──> 
 
 - `progress` 为 `null` 时按任务完成比例算；设了数值（0–1）就用它，适合“工时型”进度。
 - 跨天第一次读取会自动把任务重置成未完成，`status` 清空。
+- CLI / MCP 写入通过同一个文件锁串行完成，避免并发更新覆盖。
+- 状态文件损坏或字段类型不合法时，菜单显示原因，所有写操作报错并保留原文件；修复文件后再更新。已有重复 ID 不自动改写，用序号选择任务。
+- 任务文字只按文本显示，换行、控制字符和 `|` 不会变成菜单动作。
 
 ## 安装
 
@@ -52,7 +55,7 @@ cd ~/agent/workbar
 ./install.sh
 ```
 
-`install.sh` 依次做：建 `.venv` 并装 MCP SDK → 软链 SwiftBar 插件到插件目录 → 拷 `skills/workbar` 到 agent 的 skills 目录 → `openclaw mcp set workbar` 注册。可用 `WORKBAR_HOME` / `WORKBAR_SKILLS_DIR` / `WORKBAR_PLUGIN_DIR` 覆盖默认路径。
+`install.sh` 依次做：建 `.venv` 并装 MCP SDK → 写入 SwiftBar 插件启动器 → 拷 `skills/workbar` 到 agent 的 skills 目录 → `openclaw mcp set workbar` 注册。可用 `WORKBAR_HOME` / `WORKBAR_SKILLS_DIR` / `WORKBAR_PLUGIN_DIR` 覆盖默认路径；启动器和 MCP 会保存相同的绝对状态目录。
 
 > skill 是拷贝而不是软链：OpenClaw 的 skill loader 不识别软链目录。改了 `skills/workbar/SKILL.md` 要重跑一次 `./install.sh` 同步。
 
@@ -64,7 +67,11 @@ uv venv .venv && uv pip install --python .venv/bin/python "mcp[cli]"
 
 P="$HOME/Library/Application Support/SwiftBar"
 mkdir -p "$P"
-ln -sf "$PWD/swiftbar/workbar.5s.py" "$P/workbar.5s.py"
+T="$(mktemp "$P/.workbar.XXXXXX")"
+printf '#!/usr/bin/env bash\nexport WORKBAR_HOME=%q\nexec %q %q\n' \
+  "${WORKBAR_HOME:-$HOME/.workbar}" "$PWD/.venv/bin/python" "$PWD/swiftbar/workbar.5s.py" > "$T"
+chmod +x "$T"
+mv -f "$T" "$P/workbar.5s.py"
 defaults write com.ameba.SwiftBar PluginDirectory -string "$P"
 open -a SwiftBar
 ```
@@ -99,4 +106,6 @@ python3 cli.py clear            # 收工
 `workbar_set_plan` `workbar_add_task` `workbar_complete` `workbar_undo`
 `workbar_set_status` `workbar_set_progress` `workbar_state` `workbar_clear`
 
-`workbar_complete` 的 `task` 参数可以是序号（`"2"`）、任务 id，或标题片段。
+`workbar_complete` 的 `task` 参数可以是序号（`"2"`）、任务 id、完整标题或唯一标题片段。完整标题优先于片段；匹配多个任务时返回错误，改用序号或唯一 id。新任务使用独立 id，相同标题也不会生成重复 id。
+
+回归测试：`python3 -m unittest -v test_workbar.py`；MCP 端到端测试：`.venv/bin/python test_mcp.py`。两者使用临时目录，不修改真实清单。

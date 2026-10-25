@@ -19,16 +19,24 @@ else
 fi
 
 # 2. State dir ----------------------------------------------------------------
+STATE_HOME="$("$DIR/.venv/bin/python" -c 'import sys; from pathlib import Path; print(Path(sys.argv[1]).expanduser().resolve())' "$STATE_HOME")"
 mkdir -p "$STATE_HOME"
 say "state dir: $STATE_HOME"
 
 # 3. SwiftBar plugin ----------------------------------------------------------
 if [ -d "/Applications/SwiftBar.app" ]; then
   mkdir -p "$PLUGIN_DIR"
-  chmod +x "$DIR/swiftbar/workbar.5s.py"
-  ln -sf "$DIR/swiftbar/workbar.5s.py" "$PLUGIN_DIR/workbar.5s.py"
+  # A launcher persists WORKBAR_HOME for the GUI app (which does not inherit
+  # variables exported in this installer). Replace any old symlink atomically.
+  PLUGIN_TMP="$(mktemp "$PLUGIN_DIR/.workbar.XXXXXX")"
+  trap 'rm -f "$PLUGIN_TMP"' EXIT
+  printf '#!/usr/bin/env bash\nexport WORKBAR_HOME=%q\nexec %q %q\n' \
+    "$STATE_HOME" "$DIR/.venv/bin/python" "$DIR/swiftbar/workbar.5s.py" > "$PLUGIN_TMP"
+  chmod +x "$PLUGIN_TMP"
+  mv -f "$PLUGIN_TMP" "$PLUGIN_DIR/workbar.5s.py"
+  trap - EXIT
   defaults write com.ameba.SwiftBar PluginDirectory -string "$PLUGIN_DIR"
-  say "SwiftBar plugin linked -> $PLUGIN_DIR/workbar.5s.py"
+  say "SwiftBar launcher installed -> $PLUGIN_DIR/workbar.5s.py"
   open -a SwiftBar || true
   open -g "swiftbar://refreshplugin?name=workbar" || true
 else
@@ -43,7 +51,15 @@ say "skill installed -> $SKILLS_DIR/workbar (copy; re-run after editing the skil
 
 # 5. MCP registration (optional, only if openclaw exists) ---------------------
 if command -v openclaw >/dev/null 2>&1; then
-  openclaw mcp set workbar "{\"command\":\"$DIR/.venv/bin/python\",\"args\":[\"mcp_server.py\"],\"cwd\":\"$DIR\",\"env\":{\"WORKBAR_HOME\":\"$STATE_HOME\"}}" >/dev/null
+  MCP_CONFIG="$("$DIR/.venv/bin/python" - "$DIR" "$STATE_HOME" <<'PY'
+import json
+import sys
+project, state_home = sys.argv[1:]
+print(json.dumps({"command": project + "/.venv/bin/python", "args": ["mcp_server.py"],
+                  "cwd": project, "env": {"WORKBAR_HOME": state_home}}))
+PY
+)"
+  openclaw mcp set workbar "$MCP_CONFIG" >/dev/null
   say "MCP server registered: workbar"
   say "new sessions will see workbar_* tools; restart the Gateway if needed"
 else
