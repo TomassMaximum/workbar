@@ -18,10 +18,11 @@ from contextlib import contextmanager
 from datetime import datetime, date
 from pathlib import Path
 
+from workbar_visual import capsule_images
+
 HOME = Path(os.environ.get("WORKBAR_HOME", Path.home() / ".workbar"))
 STATE_PATH = HOME / "state.json"
 PLUGIN_NAME = "workbar"
-BAR_WIDTH = 10
 
 
 def today() -> str:
@@ -153,27 +154,13 @@ def compute_progress(state: dict) -> float | None:
     return done / len(tasks)
 
 
-def progress_bar(ratio: float, width: int = BAR_WIDTH, ansi: bool = False) -> str:
-    filled = int(round(ratio * width))
-    filled = max(0, min(width, filled))
-    if not ansi:
-        return "█" * filled + "░" * (width - filled)
-    # Green for done, dim gray for remaining: block glyphs alone have no contrast
-    # against the translucent menu bar.
-    return "\033[32m" + "█" * filled + "\033[0m" + "\033[90m" + "░" * (width - filled) + "\033[0m"
-
-
-def header_text(state: dict, ansi: bool = False) -> str:
+def header_text(state: dict) -> str:
     ratio = compute_progress(state)
-    tasks = state.get("tasks") or []
-    done = sum(1 for t in tasks if t.get("done"))
     parts = []
     if ratio is None:
-        parts.append("无计划")
+        parts.append("待开始")
     else:
-        parts.append(f"{progress_bar(ratio, ansi=ansi)} {int(round(ratio * 100))}%")
-        if tasks:
-            parts.append(f"{done}/{len(tasks)}")
+        parts.append(f"{int(round(ratio * 100))}%")
     status = menu_text(state.get("status") or "").strip()
     if status:
         parts.append(status if len(status) <= 14 else status[:13] + "…")
@@ -185,7 +172,7 @@ def render_swiftbar(state: dict) -> str:
     ratio = compute_progress(state)
     tasks = state.get("tasks") or []
     done = sum(1 for t in tasks if t.get("done"))
-    lines = [header_text(state, ansi=True) + " | ansi=true", "---"]
+    lines = [f"{header_text(state)} | image={capsule_images(ratio)} size=12", "---"]
 
     if tasks:
         lines.append(f"今日计划 {done}/{len(tasks)} | size=12")
@@ -198,7 +185,7 @@ def render_swiftbar(state: dict) -> str:
 
     if isinstance(ratio, (int, float)):
         lines.append("---")
-        lines.append(f"进度 {int(round(ratio * 100))}% ({progress_bar(ratio, 16)}) | size=12")
+        lines.append(f"进度 {int(round(ratio * 100))}% | size=12")
 
     if state.get("error"):
         lines.append(f"读取失败：{menu_text(state['error'])} | size=12 color=red")

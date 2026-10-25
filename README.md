@@ -8,17 +8,14 @@ macOS 状态栏工作进度条。显示端是 SwiftBar 插件，写入端是一�
 agent ──MCP──> workbar MCP server ──> ~/.workbar/state.json ──> SwiftBar 插件 ──> 状态栏
 ```
 
-状态栏长这样：
-
-```
-███████░░░  70%   3/4   写测试中
-```
+状态栏使用连续圆角胶囊：青绿渐变填充、半透明底轨，适配浅色／深色菜单栏和 Retina。右侧显示百分比与当前事项，完成数量放在下拉菜单中。
 
 ## 组成
 
 | 文件 | 作用 |
 |---|---|
 | `workbar_core.py` | state 契约、进度计算、SwiftBar 渲染、刷新触发 |
+| `workbar_visual.py` | 无外部依赖的胶囊图形（Retina PNG，明暗两套配色） |
 | `workbar_api.py` | 所有写操作（plan / done / status / progress / clear） |
 | `mcp_server.py` | MCP stdio server，8 个工具 |
 | `cli.py` | 同一套操作的手动入口 |

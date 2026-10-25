@@ -148,7 +148,7 @@ class WorkbarTests(unittest.TestCase):
         state["updatedAt"] = payload
         state["error"] = payload
         output = core.render_swiftbar(state)
-        self.assertEqual(output.splitlines()[0].split(" | ")[1], "ansi=true")
+        self.assertEqual(len(output.splitlines()[0].split(" | ")), 2)
         task_lines = [line for line in output.splitlines() if line.startswith("⬜")]
         self.assertEqual(len(task_lines), 1)
         self.assertEqual(task_lines[0].split(" | ")[1], "size=12")
