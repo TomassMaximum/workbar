@@ -269,6 +269,35 @@ class WorkbarTests(unittest.TestCase):
         self.assertFalse(api.begin_turn()["should_ask"])
         self.assertEqual(core.load_state()["tasks"], raw["tasks"])
 
+    def test_refresh_cold_launches_without_sending_a_scheme_url(self):
+        with patch.object(core.subprocess, "run") as run, \
+                patch.object(core, "_open_swiftbar") as scheme:
+            run.return_value.returncode = 1
+            core.refresh_menubar()
+        self.assertEqual(run.call_args_list[1].args[0], ["open", "-g", "-a", "SwiftBar"])
+        scheme.assert_not_called()
+
+    def test_refresh_running_app_uses_the_refresh_scheme(self):
+        with patch.object(core.subprocess, "run") as run, \
+                patch.object(core, "_open_swiftbar") as scheme:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, stdout="123\n"),
+                subprocess.CompletedProcess([], 0, stdout="00:10\n"),
+            ]
+            core.refresh_menubar()
+        self.assertEqual(run.call_count, 2)
+        scheme.assert_called_once_with("swiftbar://refreshplugin?name=workbar")
+
+    def test_refresh_does_not_send_a_scheme_while_app_is_starting(self):
+        with patch.object(core.subprocess, "run") as run, \
+                patch.object(core, "_open_swiftbar") as scheme:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, stdout="123\n"),
+                subprocess.CompletedProcess([], 0, stdout="00:00\n"),
+            ]
+            core.refresh_menubar()
+        scheme.assert_not_called()
+
     def test_notification_url_uses_swiftbar_and_encodes_chinese(self):
         from urllib.parse import parse_qs, urlparse
         with patch.object(core, "_open_swiftbar") as launch:

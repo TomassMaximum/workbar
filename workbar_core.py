@@ -242,6 +242,46 @@ def render_swiftbar(state: dict) -> str:
 
 def refresh_menubar() -> None:
     """Ask SwiftBar to re-read the plugin immediately."""
+    # A scheme URL delivered during cold launch can reach SwiftBar before its
+    # plugin manager is initialized and crash the app. A normal launch already
+    # reads the latest state, so no refresh URL is needed in that case.
+    try:
+        running = subprocess.run(
+            ["pgrep", "-x", "SwiftBar"],
+            check=False,
+            timeout=5,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if running.returncode != 0:
+            subprocess.run(
+                ["open", "-g", "-a", "SwiftBar"],
+                check=False,
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        # Several CLI writes can follow each other during startup. A process
+        # existing does not yet mean its application delegate is initialized.
+        age = subprocess.run(
+            ["ps", "-p", running.stdout.strip().splitlines()[0], "-o", "etime="],
+            check=False,
+            timeout=5,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        fields = age.stdout.strip().replace("-", ":").split(":")
+        if age.returncode != 0 or not all(part.isdigit() for part in fields):
+            return
+        seconds = sum(int(part) * unit for part, unit in
+                      zip(reversed(fields), (1, 60, 3600, 86400)))
+        if seconds < 2:
+            return
+    except (OSError, subprocess.SubprocessError):
+        return
     _open_swiftbar(f"swiftbar://refreshplugin?name={PLUGIN_NAME}")
 
 
