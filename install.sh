@@ -6,16 +6,37 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_HOME="${WORKBAR_HOME:-$HOME/.workbar}"
 SKILLS_DIR="${WORKBAR_SKILLS_DIR:-$HOME/.openclaw/workspace/skills}"
-PLUGIN_DIR="${WORKBAR_PLUGIN_DIR:-$HOME/Library/Application Support/SwiftBar}"
+# SwiftBar scans every file under PluginDirectory. Keep it a dedicated folder:
+# pointing it at ~/Library/Application Support/SwiftBar makes SwiftBar load its
+# own Diagnostics/*.txt as plugins, which raises ShellOutError and can make the
+# whole menu bar item disappear (see README troubleshooting).
+PLUGIN_DIR="${WORKBAR_PLUGIN_DIR:-$HOME/SwiftBarPlugins}"
 AGENTS_FILE="${WORKBAR_AGENTS_FILE:-$(dirname "$SKILLS_DIR")/AGENTS.md}"
 CODEX_DIR="${WORKBAR_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
 # 1. Python env ---------------------------------------------------------------
+# mcp requires Python 3.10+. Prefer uv (it can fetch a managed interpreter);
+# fall back to a local 3.10+ so the installer also works without uv.
 if [ ! -x "$DIR/.venv/bin/python" ]; then
   say "creating .venv"
-  (cd "$DIR" && uv venv .venv >/dev/null && uv pip install --python .venv/bin/python "mcp[cli]" >/dev/null)
+  if command -v uv >/dev/null 2>&1; then
+    (cd "$DIR" && uv venv .venv >/dev/null && uv pip install --python .venv/bin/python "mcp[cli]" >/dev/null)
+  else
+    PYTHON=""
+    for candidate in python3.13 python3.12 python3.11 python3.10; do
+      if command -v "$candidate" >/dev/null 2>&1; then PYTHON="$candidate"; break; fi
+    done
+    if [ -z "$PYTHON" ]; then
+      say "需要 uv 或 Python 3.10+：brew install uv，然后重跑 ./install.sh" >&2
+      exit 1
+    fi
+    say "uv not found — falling back to $PYTHON"
+    "$PYTHON" -m venv "$DIR/.venv"
+    "$DIR/.venv/bin/python" -m pip install -q --upgrade pip
+    "$DIR/.venv/bin/python" -m pip install -q "mcp[cli]"
+  fi
 else
   say ".venv already present"
 fi
@@ -39,10 +60,13 @@ if [ -d "/Applications/SwiftBar.app" ]; then
   trap - EXIT
   defaults write com.ameba.SwiftBar PluginDirectory -string "$PLUGIN_DIR"
   say "SwiftBar launcher installed -> $PLUGIN_DIR/workbar.5s.py"
-  if ! pgrep -x SwiftBar >/dev/null; then
-    open -a SwiftBar || true
-  fi
-  open -g "swiftbar://refreshplugin?name=workbar" || true
+  # Replacing the launcher under a running SwiftBar leaves an orphaned status
+  # item on macOS 26/27: the process keeps reporting "requested visible" while
+  # nothing is drawn (README troubleshooting). A clean relaunch is reliable, a
+  # swiftbar:// refresh URL after a file swap is not, so restart the app.
+  pkill -x SwiftBar 2>/dev/null || true
+  sleep 1
+  open -a SwiftBar || true
 else
   say "SwiftBar not installed — \`brew install --cask swiftbar\`, then re-run"
 fi
@@ -67,11 +91,25 @@ print(json.dumps({"command": project + "/.venv/bin/python", "args": ["mcp_server
                   "cwd": project, "env": {"WORKBAR_HOME": state_home}}))
 PY
 )"
-  openclaw mcp set workbar "$MCP_CONFIG" >/dev/null
-  say "MCP server registered: workbar"
-  say "new sessions will see workbar_* tools; restart the Gateway if needed"
+  if openclaw mcp set workbar "$MCP_CONFIG" >/dev/null 2>&1; then
+    say "MCP server registered: workbar"
+    say "new sessions will see workbar_* tools; restart the Gateway if needed"
+  else
+    # A running Gateway holds offline state ownership and rejects mcp.set.
+    # Everything else already works through the CLI and the skill.
+    say "MCP registration skipped — the OpenClaw Gateway owns the state root."
+    say "  CLI + skill still work. To register later, stop the Gateway and run:"
+    say "  openclaw mcp set workbar '$MCP_CONFIG' && openclaw mcp probe workbar"
+  fi
 else
   say "openclaw CLI not found — register the MCP server manually (see README)"
+fi
+
+# 6. Self-check ---------------------------------------------------------------
+if "$DIR/.venv/bin/python" "$DIR/cli.py" render 2>/dev/null | head -1 | grep -q .; then
+  say "self-check: menu bar item renders"
+else
+  say "self-check: no tasks yet — the item stays hidden until the first task"
 fi
 
 say "done. try: $DIR/.venv/bin/python $DIR/test_mcp.py"

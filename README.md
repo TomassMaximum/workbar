@@ -2,7 +2,7 @@
 
 macOS 状态栏工作进度条。显示端是 SwiftBar 插件，写入端是一个 MCP server（也有 CLI）。
 
-位置：`~/agent/workbar`（与 dobby / cadence / cortex 等 agent 项目同级）。
+位置：`~/Agents/workbar`（与 dobby / cadence / cortex 等 agent 项目同级）。
 
 ```
 agent ──MCP──> workbar MCP server ──> ~/.workbar/state.json ──> SwiftBar 插件 ──> 状态栏
@@ -64,11 +64,13 @@ agent ──MCP──> workbar MCP server ──> ~/.workbar/state.json ──> 
 
 ```bash
 brew install --cask swiftbar   # 没装的话
-cd ~/agent/workbar
+cd ~/Agents/workbar
 ./install.sh
 ```
 
-`install.sh` 依次做：建 `.venv` 并装 MCP SDK → 写入 SwiftBar 插件启动器 → 安装 skill 和 AGENTS 每日入口 → 注册 OpenClaw MCP。安装器支持 OpenClaw 和本机已安装的 Codex，保留 AGENTS 其余内容；重复运行只更新 workbar 管理块。
+`install.sh` 依次做：建 `.venv` 并装 MCP SDK → 写入 SwiftBar 插件启动器 → 安装 skill 和 AGENTS 每日入口 → 注册 OpenClaw MCP。安装器支持 OpenClaw 和本机已安装的 Codex，保留 AGENTS 其余内容；重复运行只更新 workbar 管理块。缺 `uv` 时会退回本机 Python 3.10+ 建 venv；`openclaw` 网关占用状态时跳过 MCP 注册并打印重试命令，其余步骤照常完成。
+
+SwiftBar 的插件目录默认是 `~/SwiftBarPlugins`，必须是专用空目录：SwiftBar 会把目录下每个文件都当插件加载，指到 `~/Library/Application Support/SwiftBar` 会连它自己的 `Diagnostics/*.txt` 一起加载并报错（见 [排错](#排错)）。
 
 可用 `WORKBAR_HOME` / `WORKBAR_SKILLS_DIR` / `WORKBAR_PLUGIN_DIR` / `WORKBAR_AGENTS_FILE` / `WORKBAR_CODEX_HOME` 覆盖路径；启动器、MCP 和 skill 中的 CLI 命令使用相同的绝对状态目录。
 
@@ -79,10 +81,10 @@ cd ~/agent/workbar
 手动版本（仅显示端调试；完整每日入口请运行安装器）：
 
 ```bash
-cd ~/agent/workbar
+cd ~/Agents/workbar
 uv venv .venv && uv pip install --python .venv/bin/python "mcp[cli]"
 
-P="$HOME/Library/Application Support/SwiftBar"
+P="$HOME/SwiftBarPlugins"
 mkdir -p "$P"
 T="$(mktemp "$P/.workbar.XXXXXX")"
 printf '#!/usr/bin/env bash\nexport WORKBAR_HOME=%q\nexec %q %q\n' \
@@ -127,3 +129,40 @@ python3 cli.py clear            # 收工
 `workbar_complete` 的 `task` 参数可以是序号（`"2"`）、任务 id、完整标题或唯一标题片段。完整标题优先于片段；匹配多个任务时返回错误，改用序号或唯一 id。新任务使用独立 id，相同标题也不会生成重复 id。
 
 回归测试：`python3 -m unittest -v test_workbar.py`；MCP 端到端测试：`.venv/bin/python test_mcp.py`。两者使用临时目录，不修改真实清单。
+
+## 排错
+
+### 状态栏条目完全不见了
+
+在 macOS 26/27 上，SwiftBar 2.1.x 有时会出现「菜单栏里没有 workbar，但进程在跑、脚本执行成功、诊断文件里 `menu item requested visible: yes`」。这是上游 [swiftbar/SwiftBar#442](https://github.com/swiftbar/SwiftBar/issues/442) 的已知问题：`MenuBarAgent` 里留下孤儿状态项后，SwiftBar 怎么刷新都画不出来。
+
+本机（macOS 27.2）观察到的诱因：
+
+- 全部完成触发五分钟隐藏后，条目被移除；
+- 给运行中的 SwiftBar 发 `swiftbar://refreshplugin`；
+- 在 SwiftBar 运行时替换插件启动器文件。
+
+所以安装脚本改成「替换启动器 → 重启 SwiftBar」，不再发刷新 URL。恢复顺序：
+
+```bash
+~/Agents/workbar/fix-menubar.sh   # 重启 SwiftBar + MenuBarAgent，多数情况够用
+brew reinstall --cask swiftbar && ~/Agents/workbar/fix-menubar.sh   # 还不行就重装 App
+```
+
+仍不行就注销重登。状态文件 `~/.workbar/state.json` 不受影响，期间 `cli.py` 一切照常。
+
+### 插件目录里不要放别的文件
+
+SwiftBar 会把 `PluginDirectory` 下的每个文件都当插件。曾经把插件目录设成 `~/Library/Application Support/SwiftBar`，结果它自己的 `Diagnostics/latest-system-report.txt` 也被加载，日志里出现 `ShellOutError`，菜单栏上多一个 `?` 图标且 workbar 一起消失。插件目录必须是专用目录（默认 `~/SwiftBarPlugins`），只放启动器。
+
+### 安装时提示 MCP registration skipped
+
+`openclaw mcp set` 需要独占状态根；Gateway 正在运行时会被拒绝（`This operation requires exclusive offline state ownership`）。这是正常的：CLI 和 skill 不依赖 MCP。停掉 Gateway 后重跑同一条命令即可。
+
+### 没有 uv
+
+安装器会退回本机 Python 3.10+。两者都没有时装 `uv`：`brew install uv`。
+
+### 状态文字被截断成 `…`
+
+状态栏标题有宽度上限，`status` 建议 ≤14 字；超长会被截断，任务全文仍在下拉菜单里。

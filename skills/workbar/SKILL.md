@@ -4,14 +4,14 @@ description: 每条真人消息执行每日任务检查：每天首次对话询�
 metadata:
   author: Wei + Claw
   version: "2.0.0"
-  homepage: ~/agent/workbar
+  homepage: ~/Agents/workbar
 ---
 
 # workbar
 
 macOS 状态栏工作进度条。显示端是 SwiftBar 插件，写入端是 MCP server。
 
-- 项目目录：`~/agent/workbar`（可用环境变量 `WORKBAR_DIR` 覆盖）
+- 项目目录：`~/Agents/workbar`（可用环境变量 `WORKBAR_DIR` 覆盖）
 - MCP server 名：`workbar`
 - 状态文件：`$WORKBAR_HOME/state.json`，默认 `~/.workbar/state.json`
 - 刷新：插件 5 秒轮询，写入时立刻触发刷新，不需要重启任何东西
@@ -56,7 +56,7 @@ macOS 状态栏工作进度条。显示端是 SwiftBar 插件，写入端是 MCP
 新 session 才会注入 `workbar_*` 工具；当前 session 没有就用 CLI：
 
 ```bash
-cd ~/agent/workbar
+cd ~/Agents/workbar
 python3 cli.py plan "修 A 模块 bug" "写 B 接口" "补测试"
 python3 cli.py begin-turn       # 每条真人消息前调用；返回 JSON
 python3 cli.py done 2
@@ -84,8 +84,8 @@ python3 cli.py clear
 ## 安装（新设备 / 新 agent）
 
 ```bash
-git clone <repo> ~/agent/workbar   # 或直接拷贝目录
-cd ~/agent/workbar
+git clone <repo> ~/Agents/workbar   # 或直接拷贝目录
+cd ~/Agents/workbar
 ./install.sh
 ```
 
@@ -96,7 +96,7 @@ MCP 不在线时优先用下方安装器写入的“本机安装命令”；未�
 ## 自检
 
 ```bash
-cd ~/agent/workbar
+cd ~/Agents/workbar
 python3 -m unittest -v test_workbar.py
 .venv/bin/python test_mcp.py      # 临时目录，不动真实状态
 python3 cli.py render             # 看 SwiftBar 原始输出
