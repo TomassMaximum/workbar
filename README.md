@@ -132,28 +132,20 @@ python3 cli.py clear            # 收工
 
 ## 排错
 
-### 状态栏条目完全不见了
+### 状态栏里看不到 workbar（但另一块屏幕上能看到）
 
-在 macOS 26/27 上，SwiftBar 2.1.x 有时会出现「菜单栏里没有 workbar，但进程在跑、脚本执行成功、诊断文件里 `menu item requested visible: yes`」。这是上游 [swiftbar/SwiftBar#442](https://github.com/swiftbar/SwiftBar/issues/442) 的已知问题：`MenuBarAgent` 里留下孤儿状态项后，SwiftBar 怎么刷新都画不出来。
+这不是故障。macOS 在菜单栏放不下新条目时，会把放不下的常驻项收进右侧的 `»`（显示更多）菜单；同一个 App 在不同屏幕上的菜单栏宽度不同（外接屏更宽、内置屏还带刘海），所以常见的是「副屏一直显示、主屏要点 `»` 才看得到」。`Diagnostics/latest-system-report.txt` 里 `menu item requested visible: yes` 也说明条目已创建、只是没位置画。
 
-本机（macOS 27.2）观察到的诱因：
+按需要选一种：
 
-- 全部完成触发五分钟隐藏后，条目被移除；
-- 给运行中的 SwiftBar 发 `swiftbar://refreshplugin`；
-- 在 SwiftBar 运行时替换插件启动器文件。
-
-所以安装脚本改成「替换启动器 → 重启 SwiftBar」，不再发刷新 URL。恢复顺序：
-
-```bash
-~/Agents/workbar/fix-menubar.sh   # 重启 SwiftBar + MenuBarAgent，多数情况够用
-brew reinstall --cask swiftbar && ~/Agents/workbar/fix-menubar.sh   # 还不行就重装 App
-```
-
-仍不行就注销重登。状态文件 `~/.workbar/state.json` 不受影响，期间 `cli.py` 一切照常。
+- 点菜单栏右侧的 `»` 查看被收起的条目；
+- 减少主屏常驻菜单栏项（或把不常用的收进 `»`）；
+- 把 `status` 写短——条目宽度主要来自状态文字，`workbar_set_status` 建议 ≤14 字；
+- 需要常显时把工作窗口放到副屏。
 
 ### 插件目录里不要放别的文件
 
-SwiftBar 会把 `PluginDirectory` 下的每个文件都当插件。曾经把插件目录设成 `~/Library/Application Support/SwiftBar`，结果它自己的 `Diagnostics/latest-system-report.txt` 也被加载，日志里出现 `ShellOutError`，菜单栏上多一个 `?` 图标且 workbar 一起消失。插件目录必须是专用目录（默认 `~/SwiftBarPlugins`），只放启动器。
+SwiftBar 会把 `PluginDirectory` 下的每个文件都当插件。曾经把插件目录设成 `~/Library/Application Support/SwiftBar`，结果它自己的 `Diagnostics/latest-system-report.txt` 也被当成插件执行，日志里出现 `ShellOutError`，菜单栏上多出一个 `?` 图标。插件目录必须是专用目录（默认 `~/SwiftBarPlugins`），只放启动器。
 
 ### 安装时提示 MCP registration skipped
 

@@ -60,10 +60,8 @@ if [ -d "/Applications/SwiftBar.app" ]; then
   trap - EXIT
   defaults write com.ameba.SwiftBar PluginDirectory -string "$PLUGIN_DIR"
   say "SwiftBar launcher installed -> $PLUGIN_DIR/workbar.5s.py"
-  # Replacing the launcher under a running SwiftBar leaves an orphaned status
-  # item on macOS 26/27: the process keeps reporting "requested visible" while
-  # nothing is drawn (README troubleshooting). A clean relaunch is reliable, a
-  # swiftbar:// refresh URL after a file swap is not, so restart the app.
+  # Restart SwiftBar so it re-reads the plugin list; a refresh URL sent while the
+  # app is still starting up is not reliable.
   pkill -x SwiftBar 2>/dev/null || true
   sleep 1
   open -a SwiftBar || true
